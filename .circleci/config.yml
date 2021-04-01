@@ -5,13 +5,15 @@ jobs:
     docker:
       - image: cimg/base:2020.01
     steps:
-      - run: echo "build job"   
+      - run: echo "build job"  
+      - run: echo ${MY_SECRET}
       
   test:
     docker:
       - image: cimg/base:2020.01
     steps:
-      - run: echo "test job"  
+      - run: echo "test job"
+      - run: echo ${TEST_SECRET}
       
   deploy:
     docker:
