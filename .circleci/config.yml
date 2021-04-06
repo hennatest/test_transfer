@@ -1,33 +1,128 @@
-version: 2.1
-      
-jobs:
-  build:
-    docker:
-      - image: cimg/base:2020.01
-    steps:
-      - run: echo "build job"  
-      - run: echo ${MY_SECRET}
-      
-  test:
-    docker:
-      - image: cimg/base:2020.01
-    steps:
-      - run: echo "test job"
-      - run: echo ${TEST_SECRET}
-      
-  deploy:
-    docker:
-      - image: cimg/base:2020.01
-    steps:
-      - run: echo "deploy"
+version: 2.1 # Use 2.1 to enable using orbs and other features.
+# Declare the orbs that we'll use in our config.
+# read more about orbs: https://circleci.com/docs/2.0/using-orbs/
+orbs:
+  ruby: circleci/ruby@1.0
 
+#Create some aliases for code reusability
+aliases:
+  # Job Step to install dockerize to test running services and wait for them to come online
+  - &install_dockerize
+    name: Install Dockerize
+    command: wget https://github.com/jwilder/dockerize/releases/download/$DOCKERIZE_VERSION/dockerize-linux-amd64-$DOCKERIZE_VERSION.tar.gz && sudo tar -C /usr/local/bin -xzvf dockerize-linux-amd64-$DOCKERIZE_VERSION.tar.gz && rm dockerize-linux-amd64-$DOCKERIZE_VERSION.tar.gz
+    environment:
+      DOCKERIZE_VERSION: v0.3.0
+  # Job Step to test the connection to postgres
+  - &check_postgres_conn
+    name: Wait for DB
+    command: dockerize -wait tcp://localhost:5432 -timeout 1m
+
+  # Alias to restore the bundle cache
+  - &restore_gem_cache
+    keys:
+      - v1-gemfile-{{ checksum "Gemfile.lock" }}
+  # Alias to save the bundle cache
+  - &save_gem_cache
+    name: Saving gem cache
+    key: v1-gemfile-{{ checksum "Gemfile.lock" }}
+  # Any paths to be cached and reloaded in sequential jobs
+    paths:
+      - ~/vendor/bundle
+#    Small step to retrieve the stored workspace data
+  - &attach_workspace
+    attach_workspace:
+      at: ~/project
+
+  #Run the build script that runs the bundle install and configuration
+  - &bundle_install
+    name: Run Build
+    command: bash ci_scripts/circleci/circleci_build.sh
+  #Run the circleci_ruby_before_script that creates the DB's and roles for the test
+  - &circle_ci_db_setup
+    name: Run DB Setup
+    command: bash ci_scripts/circleci/circleci_ruby_before_script.sh
+  # Install postgress client libraries to get access to PSQL commands in following steps
+  - &postgres_client_install
+    name: Install Postgres Client
+    command: bash ci_scripts/circleci/postgres_install.sh
+
+  # Setup the project dependencies and cache them
+  - &dependencies
+    - checkout
+    - *attach_workspace
+    - add_ssh_keys:
+          fingerprints:
+            - "fb:83:68:40:78:86:a8:2f:55:84:49:21:d2:45:18:7c"
+    - restore_cache: *restore_gem_cache
+    - run: *bundle_install
+    - save_cache: *save_gem_cache
+    - persist_to_workspace:
+        root: .
+        paths:
+          - vendor/bundle
+  #   Full database job, currently not being used due to issues with psql
+  #  TODO: Fix issues with psql on the box potentially an ownership problem with /var/run/postgresql/.s.PGSQL.5432
+  - &database
+    - checkout
+    - *attach_workspace
+    - run: *bundle_install
+    - run: *postgres_client_install
+    - run: *circle_ci_db_setup
+
+  #   Run DB setup and Full Test Suite
+  - &run_tests
+    - checkout
+    - *attach_workspace
+    - run: *bundle_install
+    - run: *postgres_client_install
+    - run: *circle_ci_db_setup
+    - run: bundle exec rake test
+  #   This job should NOT be included in the workflow when pushing
+  #    it is for LOCAL testing only
+  - &run_tests_local
+    - checkout
+    - *attach_workspace
+    - run: echo "Local Test"
+  #   Alias for defining the needed docker images for the environment
+  - &test_environment
+    working_directory: ~/project
+    docker:
+      - image: circleci/ruby:2.6.6-node
+        environment:
+          FONT_AWESOME_AUTH_TOKEN: D3464936-491A-4CBC-A259-C262010FDECA
+      - image: circleci/postgres:12
+        environment:
+          POSTGRES_USER: facilecomm
+          POSTGRES_PASSWORD: "mypass"
+          POSTGRES_DB: circle_ci_test
+      - image: circleci/redis
+  # Requirement groups
+  - &deps
+    - "Dependencies"
+#Definintion of all jobs using the aliases
+jobs:
+  "Dependencies":
+    <<: *test_environment
+    steps: *dependencies
+  "Database":
+    <<: *test_environment
+    steps: *database
+  "Test":
+    <<: *test_environment
+    steps: *run_tests
+  "TestLocal":
+    <<: *test_environment
+    steps: *run_tests_local
+
+#The workflow definition used to determine what jobs
+# are run when CI is triggered by a git push
 workflows:
-  build-test:
+  version: 2
+  master:
     jobs:
-      - build
-      - test
-      - deploy 
-      
-      #test
-   
-  
+      - "Dependencies"
+      - "Test":
+          requires: *deps
+#      - "TestLocal"
+
+
